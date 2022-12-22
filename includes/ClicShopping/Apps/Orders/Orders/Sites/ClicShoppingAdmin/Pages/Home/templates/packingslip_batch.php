@@ -9,26 +9,22 @@
    *
    */
 
-  use ClicShopping\OM\CLICSHOPPING;
   use ClicShopping\OM\DateTime;
   use ClicShopping\OM\HTTP;
   use ClicShopping\OM\Registry;
   use ClicShopping\OM\HTML;
-  use ClicShopping\Sites\Shop\Tax;
+  use ClicShopping\OM\CLICSHOPPING;
+
+  use ClicShopping\Apps\Orders\Orders\Classes\ClicShoppingAdmin\OrderAdmin;
+
   use ClicShopping\Sites\Common\PDF;
 
-  use ClicShopping\Apps\Configuration\Administrators\Classes\ClicShoppingAdmin\AdministratorAdmin;
-  use ClicShopping\Apps\Orders\Orders\Classes\ClicShoppingAdmin\OrderAdmin;
-  use ClicShopping\Apps\Configuration\TemplateEmail\Classes\ClicShoppingAdmin\TemplateEmailAdmin;
-
   $CLICSHOPPING_Template = Registry::get('TemplateAdmin');
+  $CLICSHOPPING_Orders = Registry::get('Db');
   $CLICSHOPPING_Language = Registry::get('Language');
   $CLICSHOPPING_Orders = Registry::get('Orders');
-  $CLICSHOPPING_Currencies = Registry::get('Currencies');
-  $CLICSHOPPING_Mail = Registry::get('Mail');
-  $CLICSHOPPING_Hooks = Registry::get('Hooks');
-  $CLICSHOPPING_MessageStack = Registry::get('MessageStack');
   $CLICSHOPPING_Address = Registry::get('Address');
+  $CLICSHOPPING_MessageStack = Registry::get('MessageStack');
 
   define('FPDF_FONTPATH', CLICSHOPPING::BASE_DIR . 'External/vendor/setasign/fpdf/font/');
   require_once(CLICSHOPPING::BASE_DIR . 'External/vendor/setasign/fpdf/fpdf.php');
@@ -45,30 +41,22 @@
   }
 
   if (isset($_POST['orders_id_end'])) {
-  $orders_id_end = HTML::sanitize($_POST['orders_id_end']);
+    $orders_id_end = HTML::sanitize($_POST['orders_id_end']);
   } else {
     $orders_id_end = 0;
   }
 
-  if (isset($_POST['dropdown_status']) && $_POST['dropdown_status'] > 0) {
+  if (isset($_POST['dropdown_status']) && $_POST['dropdown_status'] != 0) {
     $orders_status_id = HTML::sanitize($_POST['dropdown_status']);
   } else {
     $orders_status_id = 0;
   }
 
-  if (isset($_POST['orders_status_update']) && $_POST['orders_status_update'] > 0) {
-    $orders_status_update = HTML::sanitize($_POST['orders_status_update']);
-  } else {
-    $orders_status_update = 0;
-  }
-
-  if (isset($_POST['orders_date'])) {
+  if (isset($_POST['orders_date']) && $_POST['orders_date'] != 0) {
     $orders_date = HTML::sanitize($_POST['orders_date']);
   } else {
     $orders_date = 0;
   }
-
-  $between_orders_id = '';
 
   if ($orders_status_id == 0) {
 
@@ -80,11 +68,13 @@
 
     if ($orders_id_start != 0 && $orders_id_end != 0) {
       if ($orders_id_start > $orders_id_end) {
-        $CLICSHOPPING_MessageStack->add($CLICSHOPPING_Orders->getDef('error_orders', 'warning'));
+        $CLICSHOPPING_MessageStack->add($CLICSHOPPING_Orders->getDef('errors_orders'), 'warning');
         $CLICSHOPPING_Orders->redirect('Orders');
       }
 
       $between_orders_id = 'AND orders_id between ' . $orders_id_start . ' and ' . $orders_id_end;
+    } else {
+      $between_orders_id = '';
     }
 
     $QordersInfo = $CLICSHOPPING_Orders->db->prepare('select orders_id,
@@ -103,21 +93,20 @@
       $QordersInfo->bindInt(':orders_id_end', $orders_id_end);
     }
   } else {
+
     if ($orders_status_id != 0) {
       $orders_status_id = ' orders_status = ' . $orders_status_id;
     } else {
-      $orders_status_id = ' orders_status > 0 ';
+      $orders_status_id = ' orders_status > 0';
     }
 
     if ($orders_date != 0) {
       $date_interval = ' AND date_purchased >= (CURDATE() - INTERVAL ' . (int)$orders_date . ' DAY) ';
-    } else {
-      $date_interval = '';
     }
 
-    if (!empty($orders_id_start) != 0 && !empty($orders_id_end) != 0) {
-      if ($orders_id_start >= $orders_id_end) {
-        $CLICSHOPPING_MessageStack->add('text_error_orders', 'warning');
+    if ($orders_id_start != 0 && $orders_id_end != 0) {
+      if ($orders_id_start > $orders_id_end) {
+        $CLICSHOPPING_MessageStack->add($CLICSHOPPING_Orders->getDef('erros_orders'), 'warning');
         $CLICSHOPPING_Orders->redirect('Orders');
       }
 
@@ -125,104 +114,41 @@
     }
 
     $QordersInfo = $CLICSHOPPING_Orders->db->prepare('select orders_id,
-                                                            customers_id,
-                                                            erp_invoice,
-                                                            customers_name,
-                                                            customers_email_address
-                                                      from :table_orders
-                                                      where ' . $orders_status_id . '
-                                                            ' . $date_interval . '
-                                                            ' . $between_orders_id . '
-                                                      order by date_purchased asc
-                                                     ');
+                                                              customers_id
+                                                        from :table_orders
+                                                        where ' . $orders_status_id . '
+                                                              ' . $date_interval . '
+                                                              ' . $between_orders_id . '
+                                                        order by date_purchased asc
+                                                       ');
 
     $QordersInfo->execute();
   }
 
   while ($QordersInfo->fetch()) {
+
     Registry::set('Order', new OrderAdmin($QordersInfo->valueInt('orders_id')), true);
     $order = Registry::get('Order');
+    $oID = $QordersInfo->valueInt('orders_id');
 
-//*********************************
-// update status and email
-//*********************************
     // Recuperations de la date de la facture (Voir aussi french.php & invoice.php)
     $QordersHistory = $CLICSHOPPING_Orders->db->prepare('select orders_status_id,
-                                                               date_added,
-                                                               customer_notified,
-                                                               orders_status_invoice_id,
-                                                               comments
-                                                       from :table_orders_status_history
-                                                       where orders_id = :orders_id
-                                                       order by date_added desc
-                                                       limit 1;
-                                                      ');
+                                                                 date_added,
+                                                                 customer_notified,
+                                                                 orders_status_invoice_id,
+                                                                 comments
+                                                         from :table_orders_status_history
+                                                         where orders_id = :orders_id
+                                                         order by date_added desc
+                                                         limit 1
+                                                        ');
 
     $QordersHistory->bindInt(':orders_id', $QordersInfo->valueInt('orders_id'));
     $QordersHistory->execute();
 
-    $oID = $QordersInfo->valueInt('orders_id');
-
-// update status
-    if ($orders_status_update > 0) {
-// verify and update the status if changed
-      if (($orders_status_update != $QordersInfo->valueInt('orders_status_id'))) {
-
-        $CLICSHOPPING_Orders->db->save('orders', [
-          'orders_status' => (int)$orders_status_update,
-          'last_modified' => 'now()'
-        ], [
-            'orders_id' => $QordersInfo->valueInt('orders_id')
-          ]
-        );
-
-// insert the modification in the database
-        $CLICSHOPPING_Orders->db->save('orders_status_history', ['orders_id' => (int)$QordersInfo->valueInt('orders_id'),
-            'date_added' => 'now()',
-            'orders_status_id' => (int)$orders_status_update,
-            'admin_user_name' => AdministratorAdmin::getUserAdmin(),
-          ]
-        );
-
-// email
-        $template_email_intro_command = TemplateEmailAdmin::getTemplateEmailIntroCommand();
-        $template_email_signature = TemplateEmailAdmin::getTemplateEmailSignature();
-        $template_email_footer = TemplateEmailAdmin::getTemplateEmailTextFooter();
-
-        $email_subject = $CLICSHOPPING_Orders->getDef('email_text_subject', ['store_name' => STORE_NAME]);
-        $email_text = $template_email_intro_command . '<br />' . $CLICSHOPPING_Orders->getDef('email_separator') . '<br /><br />' . $CLICSHOPPING_Orders->getDef('email_text_order_number') . ' ' . $QordersInfo->valueInt('orders_id') . '<br /><br />' . $CLICSHOPPING_Orders->getDef('email_text_invoice_url') . '<br />' . CLICSHOPPING::link(null, 'Account&HistoryInfo&order_id=' . $QordersInfo->valueInt('orders_id')) . '<br /><br /><br />' . $template_email_signature . '<br /><br />' . $template_email_footer;
-
-// Envoie du mail avec gestion des images pour Fckeditor et Imanager.
-        $message = html_entity_decode($email_text);
-        $message = str_replace('src="/', 'src="' . HTTP::getShopUrlDomain(), $message);
-        $CLICSHOPPING_Mail->addHtmlCkeditor($message);
-        ;
-        $from = STORE_OWNER_EMAIL_ADDRESS;
-
-        $CLICSHOPPING_Mail->send($QordersInfo->value('customers_name'), $QordersInfo->value('customers_email_address'), '', $from, $email_subject);
-
-        $CLICSHOPPING_Hooks->call('InvoiceBatch', 'Update');
-
-        $CLICSHOPPING_MessageStack->add($CLICSHOPPING_Orders->getDef('success_order_updated'), 'success');
-      }
-    }
-
     $orders_history_display = $QordersHistory->valueInt('orders_status_invoice_id');
 
-// Recuperations du nom du type de facture generee
-        $QordersStatusInvoice = $CLICSHOPPING_Orders->db->prepare('select orders_status_invoice_id,
-                                                                          orders_status_invoice_name,
-                                                                          language_id
-                                                                   from :table_orders_status_invoice
-                                                                   where orders_status_invoice_id = :orders_status_invoice_id
-                                                                   and language_id = :language_id
-                                                                 ');
-        $QordersStatusInvoice->bindInt(':orders_status_invoice_id',  (int)$orders_history_display );
-        $QordersStatusInvoice->bindInt(':language_id',  (int)$CLICSHOPPING_Language->getId() );
-    
-        $QordersStatusInvoice->execute();
-    
-        $order_status_invoice_display = $QordersStatusInvoice->value('orders_status_invoice_name');
+    $date = strftime('%A, %d %B %Y');
 
 // Set the Page Margins
 // Marge de la page
@@ -234,7 +160,6 @@
 
 
     if (DISPLAY_INVOICE_HEADER == 'false') {
-
 // Logo
       if (OrderAdmin::getOrderPdfInvoiceLogo() !== false) {
         $pdf->Image(OrderAdmin::getOrderPdfInvoiceLogo(), 5, 10, 50);
@@ -265,7 +190,7 @@
       $pdf->SetTextColor(INVOICE_RGB);
       $pdf->Ln(0);
       $pdf->Cell(-3);
-      $pdf->MultiCell(100, 3.5, utf8_decode($CLICSHOPPING_Orders->getDef('entry_email')) . STORE_OWNER_EMAIL_ADDRESS, 0, 'L');
+      $pdf->MultiCell(100, 3.5, utf8_decode($CLICSHOPPING_Orders->getDef('entry_email')) . ' ' . STORE_OWNER_EMAIL_ADDRESS, 0, 'L');
 
       // Website
       $pdf->SetX(0);
@@ -286,12 +211,11 @@
     $pdf->Cell(3, .1, '', 1, 1, '', 1);
 
 // Cadre pour l'adresse de facturation
-    /*
-      $pdf->SetDrawColor(0);
-      $pdf->SetLineWidth(0.2);
-      $pdf->SetFillColor(245);
-      $PDF->roundedRect(6, 40, 90, 35, 2, 'DF');
-    */
+    $pdf->SetDrawColor(0);
+    $pdf->SetLineWidth(0.2);
+    $pdf->SetFillColor(245);
+    $PDF->roundedRect(6, 40, 90, 35, 2, 'DF');
+
 //Draw the invoice address text
 // Adresse de facturation
     $pdf->SetFont('Arial', 'B', 8);
@@ -300,21 +224,20 @@
     $pdf->SetX(0);
     $pdf->SetY(47);
     $pdf->Cell(9);
-    $pdf->MultiCell(70, 3.3, utf8_decode($CLICSHOPPING_Address->addressFormat($order->customer['format_id'], $order->billing, '', '', "\n")), 0, 'L');
+    $pdf->MultiCell(70, 3.3, utf8_decode($CLICSHOPPING_Address->addressFormat($order->customer['format_id'], $order->customer, '', '', "\n")), 0, 'L');
 
 //Draw Box for Delivery Address
 // Cadre pour l'adresse de livraison
-    /*
-      $pdf->SetDrawColor(0);
-      $pdf->SetLineWidth(0.2);
-      $pdf->SetFillColor(255);
-      $PDF->roundedRect(108, 40, 90, 35, 2, 'DF');
-    */
+    $pdf->SetDrawColor(0);
+    $pdf->SetLineWidth(0.2);
+    $pdf->SetFillColor(255);
+    $PDF->roundedRect(108, 40, 90, 35, 2, 'DF');
+
 //Draw the invoice delivery address text
 // Adresse de livraison
     $pdf->SetFont('Arial', 'B', 8);
     $pdf->SetTextColor(0);
-    $pdf->Text(113, 44, $CLICSHOPPING_Orders->getDef('entry_ship_to'));
+    $pdf->Text(113, 44, utf8_decode($CLICSHOPPING_Orders->getDef('entry_ship_to')));
     $pdf->SetX(0);
     $pdf->SetY(47);
     $pdf->Cell(111);
@@ -345,54 +268,53 @@
 
 //Draw Box for Order Number, Date & Payment method
 // Cadre du numero de commande, date de commande et methode de paiemenent
-    /*
-      $pdf->SetDrawColor(0);
-      $pdf->SetLineWidth(0.2);
-      $pdf->SetFillColor(245);
-      $PDF->roundedRect(6, 107, 192, 11, 2, 'DF');
-    */
+    $pdf->SetDrawColor(0);
+    $pdf->SetLineWidth(0.2);
+    $pdf->SetFillColor(245);
+    $PDF->roundedRect(6, 107, 192, 11, 2, 'DF');
+
 // Order management
     if (($QordersHistory->valueInt('orders_status_invoice_id') == 1)) {
 // Display the order
-      $temp = str_replace('&nbsp;', ' ', 'No ' . $order_status_invoice_display . ' : ');
+      $temp = str_replace('&nbsp;', ' ', 'No  : ');
       $pdf->Text(10, 113, $temp . $oID);
     } elseif ($QordersHistory->valueInt('orders_status_invoice_id') == 2) {
 //Display the invoice
-      $temp = str_replace('&nbsp;', ' ', 'No ' . $order_status_invoice_display . ' : ' . DateTime::toDateReferenceShort($QordersHistory->value('date_added')) . 'S');
+      $temp = str_replace('&nbsp;', ' ', 'No ' . $orders_history_display . ' : ' . DateTime::toDateReferenceShort($QordersHistory->value('date_added')) . 'S');
       $pdf->Text(10, 113, $temp . $oID);
     } elseif ($QordersHistory->valueInt('orders_status_invoice_id') == 3) {
 //Display the cancelling
-      $temp = str_replace('&nbsp;', ' ', $order_status_invoice_display . ': ');
+      $temp = str_replace('&nbsp;', ' ', $orders_history_display . ': ');
       $pdf->Text(10, 113, $temp);
     } else {
 // Display the order
-      $temp = str_replace('&nbsp;', ' ', 'No ' . $order_status_invoice_display . ': ');
+      $temp = str_replace('&nbsp;', ' ', 'No ' . $orders_history_display . ': ');
       $pdf->Text(10, 113, $temp . $oID);
     }
 
 // Center information order management
     if (($QordersHistory->valueInt('orders_status_invoice_id') == 1)) {
 // Display the order
-      $temp = str_replace('&nbsp;', ' ', $CLICSHOPPING_Orders->getDef('print_order_date') . ' ' . $order_status_invoice_display . ' : ');
-      $pdf->Text(60, 113, $temp . DateTime::toShort($order->info['date_purchased']));
+      $temp = str_replace('&nbsp;', ' ', $CLICSHOPPING_Orders->getDef('print_order_date') . ' : ');
+      $pdf->Text(55, 113, $temp . DateTime::toShort($order->info['date_purchased']));
     } elseif ($QordersHistory->valueInt('orders_status_invoice_id') == 2) {
 //Display the invoice
-      $temp = str_replace('&nbsp;', ' ', $CLICSHOPPING_Orders->getDef('print_order_date') . ' ' . $order_status_invoice_display . ' : ');
-      $pdf->Text(60, 113, $temp . DateTime::toShort($order->info['date_purchased']));
+      $temp = str_replace('&nbsp;', ' ', $CLICSHOPPING_Orders->getDef('print_order_date') . ' ' . $orders_history_display . ' : ');
+      $pdf->Text(55, 113, $temp . DateTime::toShort($order->info['date_purchased']));
     } elseif ($QordersHistory->valueInt('orders_status_invoice_id') == 3) {
 //Display the cancelling
       $temp = str_replace('&nbsp;', ' ', '');
-      $pdf->Text(10, 113, $temp);
+      $pdf->Text(55, 113, $temp);
     } else {
 // Display the order
-      $temp = str_replace('&nbsp;', ' ', $CLICSHOPPING_Orders->getDef('print_order_date') . ' ' . $order_status_invoice_display . ' : ');
-      $pdf->Text(60, 113, $temp . DateTime::toShort($order->info['date_purchased']));
+      $temp = str_replace('&nbsp;', ' ', $CLICSHOPPING_Orders->getDef('print_order_date') . ' ' . $orders_history_display . ' : ');
+      $pdf->Text(55, 113, $temp . DateTime::toShort($order->info['date_purchased']));
     }
 
 
 //Draw Payment Method Text
     $temp = substr(utf8_decode($order->info['payment_method']), 0, 60);
-    $pdf->Text(110, 113, $CLICSHOPPING_Orders->getDef('entry_payment_method') . ' ' . $temp);
+    $pdf->Text(110, 113, utf8_decode($CLICSHOPPING_Orders->getDef('text_payment_method')) . ' ' . $temp);
 
 // Cadre pour afficher "BON DE COMMANDE" ou "FACTURE"
     $pdf->SetDrawColor(0);
@@ -404,7 +326,7 @@
     $pdf->SetFont('Arial', '', 10);
     $pdf->SetY(32);
     $pdf->SetX(108);
-    $pdf->MultiCell(90, 7, $order_status_invoice_display, 0, 'C');
+    $pdf->MultiCell(90, 7, $orders_history_display, 0, 'C');
 
 // Fields Name position
     $Y_Fields_Name_position = 125;
@@ -413,10 +335,9 @@
     $Y_Table_Position = 131;
 
 // Entete du tableau des produits
-    $PDF->outputTableHeadingPdf($Y_Fields_Name_position);
+    $PDF->outputTableHeadingPackingslip($Y_Fields_Name_position);
 
     $item_count = 0;
-
 // Boucle sur les produits
 // Show the products information line by line
     for ($i = 0, $n = count($order->products); $i < $n; $i++) {
@@ -425,18 +346,15 @@
       $pdf->SetFont('Arial', '', 7);
       $pdf->SetY($Y_Table_Position);
       $pdf->SetX(6);
-      $pdf->MultiCell(9, 6, $order->products[$i]['qty'], 1, 'C');
+      $pdf->MultiCell(14, 6, $order->products[$i]['qty'], 1, 'C');
 
 // Attribut management and Product Name
       $prod_attribs = '';
 
-// Get attribs and concat
+      // Get attribs and concat
       if ((isset($order->products[$i]['attributes'])) && (count($order->products[$i]['attributes']) > 0)) {
         for ($j = 0, $n2 = count($order->products[$i]['attributes']); $j < $n2; $j++) {
-          if (!empty($order->products[$i]['attributes'][$j]['reference'])) {
-            $reference = $order->products[$i]['attributes'][$j]['reference'] . ' / ';
-          }
-          $prod_attribs .= " - " . $order->products[$i]['attributes'][$j]['option'] . ' (' . $reference . '): ' . $order->products[$i]['attributes'][$j]['value'];
+          $prod_attribs .= " - " . $order->products[$i]['attributes'][$j]['option'] . ' (' . $order->products[$i]['attributes'][$j]['reference'] . '): ' . $order->products[$i]['attributes'][$j]['value'];
         }
       }
 
@@ -445,85 +363,39 @@
 //	product name
 // Nom du produit
       $pdf->SetY($Y_Table_Position);
-      $pdf->SetX(40);
-      if (strlen($product_name_attrib_contact) > 40 && strlen($product_name_attrib_contact) < 95) {
+      $pdf->SetX(60);
+
+      if (strlen($product_name_attrib_contact) > 40 && strlen($product_name_attrib_contact) < 70) {
         $pdf->SetFont('Arial', '', 6);
-        $pdf->MultiCell(103, 6, utf8_decode($product_name_attrib_contact), 1, 'L');
-      } else if (strlen($product_name_attrib_contact) > 95) {
+        $pdf->MultiCell(138, 6, utf8_decode($product_name_attrib_contact), 1, 'L');
+      } else if (strlen($product_name_attrib_contact) > 70) {
         $pdf->SetFont('Arial', '', 6);
-        $pdf->MultiCell(103, 6, utf8_decode(substr($product_name_attrib_contact, 0, 95)) . " .. ", 1, 'L');
+        $pdf->MultiCell(138, 6, utf8_decode(substr($product_name_attrib_contact, 0, 70)) . " .. ", 1, 'L');
       } else {
         $pdf->SetFont('Arial', '', 6);
-        $pdf->MultiCell(103, 6, utf8_decode($product_name_attrib_contact), 1, 'L');
+        $pdf->MultiCell(138, 6, utf8_decode($product_name_attrib_contact), 1, 'L');
         $pdf->Ln();
       }
 
 // Model
       $pdf->SetY($Y_Table_Position);
-      $pdf->SetX(15);
+      $pdf->SetX(20);
       $pdf->SetFont('Arial', '', 7);
-      $pdf->MultiCell(25, 6, utf8_decode($order->products[$i]['model']), 1, 'C');
-
-// Taxes
-      $pdf->SetFont('Arial', '', 7);
-      $pdf->SetY($Y_Table_Position);
-      $pdf->SetX(143);
-      $pdf->MultiCell(15, 6, Tax::displayTaxRateValue($order->products[$i]['tax']), 1, 'C');
-
-// Prix HT
-      $pdf->SetY($Y_Table_Position);
-      $pdf->SetX(158);
-      $pdf->SetFont('Arial', '', 7);
-      $pdf->MultiCell(20, 6, utf8_decode(html_entity_decode($CLICSHOPPING_Currencies->format($order->products[$i]['final_price'], true, $order->info['currency'], $order->info['currency_value']))), 1, 'C');
-      /*
-      // Prix TTC
-          $pdf->SetY($Y_Table_Position);
-          $pdf->SetX(138);
-          $pdf->MultiCell(20,6,$CLICSHOPPING_Currencies->format(Tax::addTax($order->products[$i]['final_price'], $order->products[$i]['tax']), true, $order->info['currency'], $order->info['currency_value']),1,'C');
-      */
-
-// Total HT
-      $pdf->SetY($Y_Table_Position);
-      $pdf->SetX(178);
-      $pdf->MultiCell(20, 6, utf8_decode(html_entity_decode($CLICSHOPPING_Currencies->format($order->products[$i]['final_price'] * $order->products[$i]['qty'], true, $order->info['currency'], $order->info['currency_value']))), 1, 'C');
+      $pdf->MultiCell(40, 6, utf8_decode($order->products[$i]['model']), 1, 'C');
       $Y_Table_Position += 6;
-
-      /*
-      // Total TTC
-          $pdf->SetY($Y_Table_Position);
-          $pdf->SetX(178);
-          $pdf->MultiCell(20,6,$CLICSHOPPING_Currencies->format(Tax::addTax($order->products[$i]['final_price'], $order->products[$i]['tax']) * $order->products[$i]['qty'], true, $order->info['currency'], $order->info['currency_value']),1,'C');
-          $Y_Table_Position += 6;
-      */
 
 // Check for product line overflow
       $item_count++;
+
       if ((is_long($item_count / 32) && $i >= 20) || ($i == 20)) {
         $pdf->AddPage();
 // Fields Name position
         $Y_Fields_Name_position = 125;
 // Table position, under Fields Name
         $Y_Table_Position = 70;
-        Common::outputTableHeadingPdf($Y_Table_Position - 6);
-
+        Common::OutputTableHeadingPackingslip($Y_Table_Position - 6);
         if ($i == 20) $item_count = 1;
       }
-    }
-
-    for ($i = 0, $n = count($order->totals); $i < $n; $i++) {
-      $pdf->SetY($Y_Table_Position + 5);
-      $pdf->SetX(102);
-
-      $temp = substr($order->totals[$i]['text'], 0, 3);
-
-      if ($temp == '<strong>') {
-        $pdf->SetFont('Arial', 'B', 7);
-        $temp2 = substr($order->totals[$i]['text'], 3);
-        $order->totals[$i]['text'] = substr($temp2, 0, strlen($temp2) - 4);
-      }
-
-      $pdf->MultiCell(94, 6, substr(utf8_decode(html_entity_decode($order->totals[$i]['title'])), 0, 30) . ' ' . utf8_decode(html_entity_decode($order->totals[$i]['text'])), 0, 'R');
-      $Y_Table_Position += 5;
     }
 
 

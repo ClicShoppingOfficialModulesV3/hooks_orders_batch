@@ -22,6 +22,7 @@
   use ClicShopping\Apps\Configuration\TemplateEmail\Classes\ClicShoppingAdmin\TemplateEmailAdmin;
 
   $CLICSHOPPING_Template = Registry::get('TemplateAdmin');
+  $CLICSHOPPING_Db = Registry::get('Db');
   $CLICSHOPPING_Language = Registry::get('Language');
   $CLICSHOPPING_Orders = Registry::get('Orders');
   $CLICSHOPPING_Currencies = Registry::get('Currencies');
@@ -87,14 +88,14 @@
       $between_orders_id = 'AND orders_id between ' . $orders_id_start . ' and ' . $orders_id_end;
     }
 
-    $QordersInfo = $CLICSHOPPING_Orders->db->prepare('select orders_id,
-                                                            customers_id
-                                                      from :table_orders
-                                                      where orders_status > 0
-                                                            ' . $date_interval . '
-                                                            ' . $between_orders_id . '
-                                                      order by date_purchased asc
-                                                     ');
+    $QordersInfo = $CLICSHOPPING_Db->prepare('select orders_id,
+                                                    customers_id
+                                              from :table_orders
+                                              where orders_status > 0
+                                                    ' . $date_interval . '
+                                                    ' . $between_orders_id . '
+                                              order by date_purchased asc
+                                             ');
 
     $QordersInfo->execute();
 
@@ -103,6 +104,7 @@
       $QordersInfo->bindInt(':orders_id_end', $orders_id_end);
     }
   } else {
+
     if ($orders_status_id != 0) {
       $orders_status_id = ' orders_status = ' . $orders_status_id;
     } else {
@@ -115,31 +117,32 @@
       $date_interval = '';
     }
 
-    if (!empty($orders_id_start) != 0 && !empty($orders_id_end) != 0) {
-      if ($orders_id_start >= $orders_id_end) {
-        $CLICSHOPPING_MessageStack->add('text_error_orders', 'warning');
+    if ($orders_id_start != 0 && $orders_id_end != 0) {
+      if ($orders_id_start > $orders_id_end) {
+        $CLICSHOPPING_MessageStack->add(ERROR_ORDERS, 'warning');
         $CLICSHOPPING_Orders->redirect('Orders');
       }
 
       $between_orders_id = 'AND orders_id between ' . $orders_id_start . ' and ' . $orders_id_end;
     }
 
-    $QordersInfo = $CLICSHOPPING_Orders->db->prepare('select orders_id,
-                                                            customers_id,
-                                                            erp_invoice,
-                                                            customers_name,
-                                                            customers_email_address
-                                                      from :table_orders
-                                                      where ' . $orders_status_id . '
-                                                            ' . $date_interval . '
-                                                            ' . $between_orders_id . '
-                                                      order by date_purchased asc
-                                                     ');
+    $QordersInfo = $CLICSHOPPING_Db->prepare('select orders_id,
+                                                      customers_id,
+                                                      erp_invoice,
+                                                      customers_name,
+                                                      customers_email_address
+                                                from :table_orders
+                                                where ' . $orders_status_id . '
+                                                        ' . $date_interval . '
+                                                        ' . $between_orders_id . '
+                                                order by date_purchased asc
+                                               ');
 
     $QordersInfo->execute();
   }
 
   while ($QordersInfo->fetch()) {
+
     Registry::set('Order', new OrderAdmin($QordersInfo->valueInt('orders_id')), true);
     $order = Registry::get('Order');
 
@@ -147,16 +150,16 @@
 // update status and email
 //*********************************
     // Recuperations de la date de la facture (Voir aussi french.php & invoice.php)
-    $QordersHistory = $CLICSHOPPING_Orders->db->prepare('select orders_status_id,
-                                                               date_added,
-                                                               customer_notified,
-                                                               orders_status_invoice_id,
-                                                               comments
-                                                       from :table_orders_status_history
-                                                       where orders_id = :orders_id
-                                                       order by date_added desc
-                                                       limit 1;
-                                                      ');
+    $QordersHistory = $CLICSHOPPING_Db->prepare('select orders_status_id,
+                                                         date_added,
+                                                         customer_notified,
+                                                         orders_status_invoice_id,
+                                                         comments
+                                                 from :table_orders_status_history
+                                                 where orders_id = :orders_id
+                                                 order by date_added desc
+                                                 limit 1;
+                                                ');
 
     $QordersHistory->bindInt(':orders_id', $QordersInfo->valueInt('orders_id'));
     $QordersHistory->execute();
@@ -168,7 +171,7 @@
 // verify and update the status if changed
       if (($orders_status_update != $QordersInfo->valueInt('orders_status_id'))) {
 
-        $CLICSHOPPING_Orders->db->save('orders', [
+        $CLICSHOPPING_Db->save('orders', [
           'orders_status' => (int)$orders_status_update,
           'last_modified' => 'now()'
         ], [
@@ -177,7 +180,7 @@
         );
 
 // insert the modification in the database
-        $CLICSHOPPING_Orders->db->save('orders_status_history', ['orders_id' => (int)$QordersInfo->valueInt('orders_id'),
+        $CLICSHOPPING_Db->save('orders_status_history', ['orders_id' => (int)$QordersInfo->valueInt('orders_id'),
             'date_added' => 'now()',
             'orders_status_id' => (int)$orders_status_update,
             'admin_user_name' => AdministratorAdmin::getUserAdmin(),
@@ -196,7 +199,7 @@
         $message = html_entity_decode($email_text);
         $message = str_replace('src="/', 'src="' . HTTP::getShopUrlDomain(), $message);
         $CLICSHOPPING_Mail->addHtmlCkeditor($message);
-        ;
+        $CLICSHOPPING_Mail->build_message();
         $from = STORE_OWNER_EMAIL_ADDRESS;
 
         $CLICSHOPPING_Mail->send($QordersInfo->value('customers_name'), $QordersInfo->value('customers_email_address'), '', $from, $email_subject);
@@ -210,13 +213,13 @@
     $orders_history_display = $QordersHistory->valueInt('orders_status_invoice_id');
 
 // Recuperations du nom du type de facture generee
-        $QordersStatusInvoice = $CLICSHOPPING_Orders->db->prepare('select orders_status_invoice_id,
-                                                                          orders_status_invoice_name,
-                                                                          language_id
-                                                                   from :table_orders_status_invoice
-                                                                   where orders_status_invoice_id = :orders_status_invoice_id
-                                                                   and language_id = :language_id
-                                                                 ');
+        $QordersStatusInvoice = $CLICSHOPPING_Db->prepare('select orders_status_invoice_id,
+                                                                  orders_status_invoice_name,
+                                                                  language_id
+                                                           from :table_orders_status_invoice
+                                                           where orders_status_invoice_id = :orders_status_invoice_id
+                                                           and language_id = :language_id
+                                                         ');
         $QordersStatusInvoice->bindInt(':orders_status_invoice_id',  (int)$orders_history_display );
         $QordersStatusInvoice->bindInt(':language_id',  (int)$CLICSHOPPING_Language->getId() );
     
